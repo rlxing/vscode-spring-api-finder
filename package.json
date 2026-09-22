@@ -1,0 +1,236 @@
+{
+  "name": "spring-api-finder",
+  "displayName": "Spring 接口路径查找器",
+  "description": "把类上的 @RequestMapping 和方法上的 @GetMapping 拼成完整路径来搜索：前端写 /kxgdnl/WJDetail 也能一键跳到后端 Controller 方法（支持 Ctrl+点击跳转 / 悬停预览 / 反查前端调用）",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "spring",
+    "springboot",
+    "java",
+    "api",
+    "endpoint",
+    "RequestMapping",
+    "GetMapping",
+    "接口",
+    "搜索"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "springApi.search",
+        "title": "Spring 接口: 搜索接口路径",
+        "category": "Spring 接口",
+        "icon": "$(search)"
+      },
+      {
+        "command": "springApi.searchSelection",
+        "title": "Spring 接口: 用选中文本搜索接口",
+        "category": "Spring 接口",
+        "icon": "$(selection)"
+      },
+      {
+        "command": "springApi.findFrontendUsages",
+        "title": "Spring 接口: 查找该接口的前端调用",
+        "category": "Spring 接口",
+        "icon": "$(references)"
+      },
+      {
+        "command": "springApi.reindex",
+        "title": "Spring 接口: 重建接口索引",
+        "category": "Spring 接口",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "springApi.copyEndpointPath",
+        "title": "Spring 接口: 复制完整接口路径",
+        "category": "Spring 接口",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "springApi.openEndpoint",
+        "title": "Spring 接口: 打开接口对应的 Controller 方法",
+        "category": "Spring 接口"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "springApi",
+          "title": "Spring 接口",
+          "icon": "media/spring-api.svg"
+        }
+      ]
+    },
+    "views": {
+      "springApi": [
+        {
+          "id": "springApi.endpoints",
+          "name": "接口列表",
+          "icon": "media/spring-api.svg",
+          "contextualTitle": "Spring 接口列表"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "springApi.endpoints",
+        "contents": "还没有建立接口索引。\n索引会把类上的 @RequestMapping 和方法上的 @GetMapping/@PostMapping 拼成完整路径。\n[建立接口索引](command:springApi.reindex)\n[直接搜索接口路径](command:springApi.search)\n建立后这里会列出所有接口，点一下就能跳到 Controller 方法。"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "springApi.searchSelection",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "springApi.search",
+        "key": "ctrl+alt+shift+f",
+        "mac": "cmd+alt+shift+f"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "springApi.searchSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@30"
+        },
+        {
+          "command": "springApi.search",
+          "group": "navigation@31"
+        },
+        {
+          "command": "springApi.findFrontendUsages",
+          "when": "editorLangId == java || editorLangId == kotlin",
+          "group": "navigation@32"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "springApi.openEndpoint",
+          "when": "false"
+        },
+        {
+          "command": "springApi.copyEndpointPath",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "springApi.search",
+          "when": "view == springApi.endpoints",
+          "group": "navigation@1"
+        },
+        {
+          "command": "springApi.reindex",
+          "when": "view == springApi.endpoints",
+          "group": "navigation@2"
+        },
+        {
+          "command": "workbench.actions.treeView.springApi.endpoints.collapseAll",
+          "when": "view == springApi.endpoints",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "springApi.copyEndpointPath",
+          "when": "view == springApi.endpoints && viewItem == endpoint",
+          "group": "inline@1"
+        },
+        {
+          "command": "springApi.findFrontendUsages",
+          "when": "view == springApi.endpoints && viewItem == endpoint",
+          "group": "inline@2"
+        },
+        {
+          "command": "springApi.findFrontendUsages",
+          "when": "view == springApi.endpoints && viewItem == controller",
+          "group": "inline@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Spring 接口路径查找器",
+      "properties": {
+        "springApi.indexOnActivation": {
+          "type": "boolean",
+          "default": true,
+          "description": "打开工作区时就在后台建立接口索引（大项目可关闭，改为首次使用时建立）。"
+        },
+        "springApi.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "额外排除的目录（glob），已内置排除 node_modules/target/build/out/dist/.git。"
+        },
+        "springApi.ignorePrefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "匹配时忽略的路径前缀，例如网关前缀 /gateway、/api。server.servlet.context-path 会自动识别，无需填写。"
+        },
+        "springApi.enableDefinition": {
+          "type": "boolean",
+          "default": true,
+          "description": "在前端字符串里 Ctrl+点击 / F12 直接跳到 Controller 方法。"
+        },
+        "springApi.enableHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "鼠标悬停在前端接口路径上时显示对应的后端接口。"
+        },
+        "springApi.enableDocumentLink": {
+          "type": "boolean",
+          "default": false,
+          "description": "把前端代码里的接口路径显示成可点击链接（会加下划线，介意可保持关闭）。"
+        },
+        "springApi.showCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Controller 方法上方显示【完整路径（点击复制）】和【前端调用】两个 CodeLens。"
+        },
+        "springApi.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "右下角状态栏显示接口数量。"
+        },
+        "springApi.autoOpenSingleMatch": {
+          "type": "boolean",
+          "default": true,
+          "description": "只匹配到一个接口时直接跳转，不再弹选择框。"
+        },
+        "springApi.openBeside": {
+          "type": "boolean",
+          "default": false,
+          "description": "跳转时在侧边打开 Controller，保留前端文件可见。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node test/run-tests.js && node test/activation-smoke.js && node test/manifest-check.js",
+    "test:unit": "node test/run-tests.js",
+    "test:smoke": "node test/activation-smoke.js",
+    "package": "npx @vscode/vsce package"
+  }
+}

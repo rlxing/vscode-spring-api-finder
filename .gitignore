@@ -1,0 +1,12 @@
+# 依赖 / 构建产物
+node_modules/
+*.vsix
+
+# 测试与调试
+.vscode-test/
+coverage/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.log

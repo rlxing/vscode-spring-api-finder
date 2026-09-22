@@ -1,0 +1,10 @@
+# 仓库里统一用 LF，避免 Windows/Linux 换行差异导致整文件 diff
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.svg text
+*.png binary
+*.vsix binary
