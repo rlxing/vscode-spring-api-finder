@@ -104,9 +104,24 @@ function createHost() {
 
 // ---------------------------------------------------------------- 索引管理
 
-/** 把配置里的忽略前缀同步到索引 */
+/** 把配置里的忽略前缀 / 自定义映射注解同步到索引 */
 function applyConfigToIndex() {
   index.extraPrefixes = (cfg().get('ignorePrefixes') || []).filter(Boolean);
+  index.mappingAnnotations = (cfg().get('extraMappingAnnotations') || []).filter(Boolean);
+  index.pathAttributes = (cfg().get('pathAttributeNames') || []).filter(Boolean);
+  index.discoverComposed = cfg().get('discoverComposedAnnotations', true) !== false;
+}
+
+/** 索引建立后把自定义注解的使用情况写到输出面板，便于排查"为什么没搜到" */
+function logCustomAnnotations() {
+  const configured = index.mappingAnnotations || [];
+  if (configured.length) {
+    output.appendLine(`[自定义映射注解] 配置生效: ${configured.join(', ')}`);
+  }
+  const found = index.discoveredAnnotations || [];
+  if (found.length) {
+    output.appendLine(`[自动识别组合注解] ${found.map((d) => `${d.name}(继承 ${d.via}${d.methods && d.methods.length ? ' ' + d.methods.join('/') : ''}${d.basePaths && d.basePaths.length ? ' 路径 ' + d.basePaths.join(',') : ''})`).join('、')}`);
+  }
 }
 
 async function ensureIndexed(withProgress) {
@@ -122,6 +137,7 @@ async function ensureIndexed(withProgress) {
       });
       if (!ok) return;
       output.appendLine(`[索引] ${index.size} 个接口，用时 ${Date.now() - begin}ms，忽略前缀: ${index.contextPaths.join(', ') || '(无)'}`);
+      logCustomAnnotations();
     };
     if (withProgress) {
       await vscode.window.withProgress(
@@ -130,6 +146,7 @@ async function ensureIndexed(withProgress) {
       );
     } else {
       await index.rebuild(undefined);
+      logCustomAnnotations();
     }
     updateStatusBar();
     refreshTree();
@@ -645,7 +662,12 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('springApi.exclude')) {
+      if (
+        e.affectsConfiguration('springApi.exclude') ||
+        e.affectsConfiguration('springApi.extraMappingAnnotations') ||
+        e.affectsConfiguration('springApi.pathAttributeNames') ||
+        e.affectsConfiguration('springApi.discoverComposedAnnotations')
+      ) {
         forceReindex();
       } else if (e.affectsConfiguration('springApi.ignorePrefixes')) {
         applyConfigToIndex();

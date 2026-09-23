@@ -20,7 +20,8 @@
  *   - 常量解析不出来时用 ** 兜底，保证"至少能被搜到"
  */
 
-const MAPPING_ANNOTATIONS = {
+/** Spring 自带映射注解 -> 默认动词标签（空数组 = 由 method= 决定，取不到就 ANY） */
+const BUILTIN_MAPPINGS = {
   RequestMapping: [],
   GetMapping: ['GET'],
   PostMapping: ['POST'],
@@ -28,6 +29,58 @@ const MAPPING_ANNOTATIONS = {
   DeleteMapping: ['DELETE'],
   PatchMapping: ['PATCH'],
 };
+
+/** 从注解参数里取路径时，默认认这些属性名 */
+const DEFAULT_PATH_ATTRIBUTES = ['value', 'path', 'url', 'uri'];
+
+/**
+ * 把 { Name: ['GET'] } / { Name: {methods, basePaths} } / {'com.a.B': ['GET']} 统一成
+ * { Name: {methods:[], basePaths?:[]} }，键一律用简单名（取最后一段）。
+ */
+function normalizeRegistry(map) {
+  const out = {};
+  for (const [name, value] of Object.entries(map || {})) {
+    if (!name) continue;
+    const simple = String(name).split('.').pop();
+    if (!simple) continue;
+    if (Array.isArray(value)) {
+      out[simple] = { methods: value.slice() };
+    } else if (value && typeof value === 'object') {
+      out[simple] = {
+        methods: Array.isArray(value.methods) ? value.methods.slice() : [],
+        basePaths: Array.isArray(value.basePaths) && value.basePaths.length ? value.basePaths.slice() : undefined,
+      };
+    }
+  }
+  return out;
+}
+
+/**
+ * 解析用户配置的自定义映射注解清单。
+ * 支持：'ZmqRequestMapping'、'ZmqRequestMapping:ZMQ'、'ZmqRequestMapping:POST,GET'、
+ *      'com.dfe.kserver.annotation.ZmqRequestMapping:ZMQ'
+ * 冒号后面是**自由文本动词标签**（不限于 HTTP 动词，写 ZMQ/RPC 都行）。
+ */
+function parseMappingAnnotationSpec(specs) {
+  const map = {};
+  for (const raw of specs || []) {
+    const spec = String(raw).trim();
+    if (!spec) continue;
+    const idx = spec.lastIndexOf(':');
+    let name = spec;
+    let verbs = [];
+    if (idx > 0) {
+      name = spec.slice(0, idx).trim();
+      verbs = spec.slice(idx + 1).split(/[,|\s]+/).map((s) => s.trim()).filter(Boolean);
+    }
+    const simple = name.split('.').pop();
+    if (!simple) continue;
+    map[simple] = { methods: verbs };
+  }
+  return map;
+}
+
+const MAPPING_ANNOTATIONS = normalizeRegistry(BUILTIN_MAPPINGS);
 
 const MODIFIER_RE = /^(?:public|protected|private|static|final|abstract|sealed|non-sealed|strictfp|default|synchronized|native|transient|volatile)$/;
 
@@ -146,7 +199,7 @@ function findAnnotations(masked, original) {
   return annotations;
 }
 
-/** 找出类/接口/枚举声明 */
+/** 找出类/接口/枚举声明（含注解类型 @interface） */
 function findClassDeclarations(masked, lineStarts, lineDepth) {
   const classes = [];
   const re = /\b(class|interface|enum|record)\s+([A-Za-z_$][\w$]*)/g;
@@ -156,10 +209,25 @@ function findClassDeclarations(masked, lineStarts, lineDepth) {
     let p = m.index - 1;
     while (p >= 0 && /\s/.test(masked[p])) p--;
     if (p >= 0 && masked[p] === '.') continue;
+    // public @interface Foo  ->  注解类型声明
+    const isAnnotationType = m[1] === 'interface' && p >= 0 && masked[p] === '@';
     const line = offsetToLine(lineStarts, m.index);
-    classes.push({ start: m.index, name: m[2], kind: m[1], line, depth: lineDepth[line] });
+    classes.push({
+      start: m.index,
+      atStart: isAnnotationType ? p : undefined,
+      name: m[2],
+      kind: m[1],
+      isAnnotationType,
+      line,
+      depth: lineDepth[line],
+    });
   }
   return classes;
+}
+
+/** 取某条注解在声明链里的起始偏移；@interface 要从 @ 开始算（否则 public @ 不算"修饰符+空白"） */
+function classDeclStart(cls) {
+  return cls && cls.atStart !== undefined ? cls.atStart : (cls ? cls.start : 0);
 }
 
 /** 判断两个位置之间是否只有修饰符/空白（用来判断注解属于谁） */
@@ -360,23 +428,32 @@ function extractRequestMethods(argsText) {
 
 /**
  * 从注解参数里取路径。
+ * @param {string} argsText 注解括号里的原文
+ * @param {object} constants 文件内 String 常量
+ * @param {string[]} [pathAttributes] 认哪些属性名是路径，默认 value/path/url/uri
  * @returns {{paths: string[], known: boolean}}
  */
-function extractPaths(argsText, constants) {
+function extractPaths(argsText, constants, pathAttributes) {
   const result = { paths: [], known: true };
   if (argsText === undefined || argsText === null) return result;
   const args = argsText.trim();
   if (!args) return result;
+  const attrs = pathAttributes && pathAttributes.length ? pathAttributes : DEFAULT_PATH_ATTRIBUTES;
 
   let target = null;
-  const named = /(?:^|,)\s*(?:value|path)\s*=/.exec(args);
+  const named = /(?:^|,)\s*([A-Za-z_$][\w$]*)\s*=/.exec(args);
   if (named) {
-    target = args.slice(named.index + named[0].length);
+    if (attrs.includes(named[1])) {
+      // 命中了路径属性，例如 value = "/a", method = ...
+      target = args.slice(named.index + named[0].length);
+    } else {
+      // 第一个具名参数不是路径属性：看它前面有没有位置参数（@X("/a", topic = "t")）
+      const before = args.slice(0, named.index).replace(/,\s*$/, '').trim();
+      if (!before) return result;
+      target = before;
+    }
   } else {
-    const firstTop = splitTopLevel(args, ',')[0].trim();
-    const asNamed = /^([A-Za-z_$][\w$]*)\s*=/.exec(firstTop);
-    if (asNamed && asNamed[1] !== 'value' && asNamed[1] !== 'path') return result;
-    target = firstTop;
+    target = args;
   }
 
   const first = splitTopLevel(target, ',')[0].trim();
@@ -401,37 +478,121 @@ function extractPaths(argsText, constants) {
 }
 
 /** 取紧贴在类声明前的 mapping 注解 */
-function attachedMappingAnnotation(annotations, declStart, masked) {
+function attachedMappingAnnotation(annotations, declStart, masked, registry) {
   const chain = attachedAnnotations(annotations, declStart, masked);
   for (let i = chain.length - 1; i >= 0; i--) {
-    if (MAPPING_ANNOTATIONS[chain[i].name]) return chain[i];
+    if (registry[chain[i].name]) return chain[i];
   }
   return null;
 }
 
 /**
+ * 跳过紧跟其后的其它注解（@ApiOperation、@PreAuthorize...），
+ * 否则 @ApiOperation(value = "x") 里的 = 会截断方法签名，导致方法名识别不出来。
+ */
+function skipForwardAnnotations(annotations, from, masked) {
+  let pos = from;
+  for (const a of annotations) {
+    if (a.start < pos) continue;
+    if (a.end <= pos) continue;
+    if (masked.slice(pos, a.start).trim()) break; // 中间还有别的代码，说明注解链结束
+    pos = a.end;
+  }
+  return pos;
+}
+
+/**
+ * 识别"组合注解"：某个自定义注解自己标了 Spring 映射注解，例如
+ *
+ *   @PostMapping
+ *   public @interface AjaxPostMapping { String value() default ""; }
+ *
+ * 就把 AjaxPostMapping 也当成映射注解，并继承 @PostMapping 的动词（POST）。
+ * 支持链式（自定义注解标在另一个自定义注解上），迭代到不动点。
+ * 注意：自定义注解本身不带 @RequestMapping 之类的元注解时（例如框架自带的 ZmqRequestMapping），
+ * 这里识别不到，需要用配置 springApi.extraMappingAnnotations 显式声明。
+ */
+function discoverComposedAnnotations(masked, annotations, classes, registry, constants, pathAttributes) {
+  const found = [];
+  const local = Object.assign({}, registry);
+  for (let round = 0; round < 4; round++) {
+    let changed = false;
+    for (const cls of classes) {
+      if (!cls.isAnnotationType || !cls.name || local[cls.name]) continue;
+      const declStart = cls.atStart === undefined ? cls.start : cls.atStart;
+      const chain = attachedAnnotations(annotations, declStart, masked);
+      let meta = null;
+      for (let i = chain.length - 1; i >= 0; i--) {
+        if (local[chain[i].name]) {
+          meta = chain[i];
+          break;
+        }
+      }
+      if (!meta) continue;
+      const entry = local[meta.name];
+      const methods = entry.methods && entry.methods.length
+        ? entry.methods.slice()
+        : extractRequestMethods(meta.argsText);
+      const metaPaths = extractPaths(meta.argsText, constants, pathAttributes);
+      const info = {
+        name: cls.name,
+        methods,
+        basePaths: metaPaths.paths.length ? metaPaths.paths : undefined,
+        via: meta.name,
+        line: cls.line,
+      };
+      local[cls.name] = { methods: info.methods, basePaths: info.basePaths };
+      found.push(info);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+  return found;
+}
+
+/**
  * 解析一个 Java/Kotlin 文件
  * @param {string} text
- * @returns {{endpoints: Array, classCount: number}}
+ * @param {object} [options]
+ * @param {object} [options.mappingAnnotations] 额外认哪些注解是映射注解，{Name:{methods,basePaths}}
+ * @param {string[]} [options.pathAttributes] 认哪些属性名是路径
+ * @param {boolean} [options.discoverComposed] 是否自动识别组合注解，默认 true
+ * @returns {{endpoints: Array, classCount: number, discovered: Array, annotationNames: string[]}}
  */
-function parseJavaFile(text) {
+function parseJavaFile(text, options) {
+  const opts = options || {};
   const endpoints = [];
-  if (!text || !text.includes('@')) return { endpoints, classCount: 0 };
+  const base = { endpoints, classCount: 0, discovered: [], annotationNames: [] };
+  if (!text || !text.includes('@')) return base;
+
+  const registry = Object.assign({}, MAPPING_ANNOTATIONS, normalizeRegistry(opts.mappingAnnotations));
+  const pathAttributes = opts.pathAttributes && opts.pathAttributes.length
+    ? opts.pathAttributes
+    : DEFAULT_PATH_ATTRIBUTES;
 
   const masked = maskCode(text);
   const lineStarts = computeLineStarts(text);
   const lineDepth = computeLineDepth(masked, lineStarts);
   const annotations = findAnnotations(masked, text);
-  if (!annotations.length) return { endpoints, classCount: 0 };
+  if (!annotations.length) return base;
   const classes = findClassDeclarations(masked, lineStarts, lineDepth);
   const constants = extractConstants(masked, originalOf(text));
+  const annotationNames = [...new Set(annotations.map((a) => a.name))];
+
+  // 自动识别本文件里定义的组合注解，并让本文件随后的解析就能用上
+  const discovered = opts.discoverComposed === false
+    ? []
+    : discoverComposedAnnotations(masked, annotations, classes, registry, constants, pathAttributes);
+  for (const d of discovered) {
+    if (!registry[d.name]) registry[d.name] = { methods: d.methods, basePaths: d.basePaths };
+  }
 
   // 挂在类上的注解（如类级 @RequestMapping）不能当成接口方法
   const classLevelAnnotationStarts = new Set();
   const classChainCache = new Map();
   const chainOfClass = (cls) => {
     if (classChainCache.has(cls.start)) return classChainCache.get(cls.start);
-    const chain = attachedAnnotations(annotations, cls.start, masked);
+    const chain = attachedAnnotations(annotations, classDeclStart(cls), masked);
     classChainCache.set(cls.start, chain);
     for (const a of chain) classLevelAnnotationStarts.add(a.start);
     return chain;
@@ -451,30 +612,44 @@ function parseJavaFile(text) {
       if (pr.known) result.paths.push(...pr.paths);
       else result.known = false;
     }
-    const ann = attachedMappingAnnotation(annotations, cls.start, masked);
+    const ann = attachedMappingAnnotation(annotations, classDeclStart(cls), masked, registry);
     if (ann) {
-      const r = extractPaths(ann.argsText, constants);
-      if (r.known) result.paths.push(...r.paths);
-      else result.known = false;
+      const r = extractPaths(ann.argsText, constants, pathAttributes);
+      const entry = registry[ann.name];
+      const metaBases = entry && entry.basePaths && entry.basePaths.length ? entry.basePaths : null;
+      if (!r.known) {
+        result.known = false;
+      } else if (metaBases) {
+        // 组合注解自带固定路径（如 @RequestMapping("/ajax") @interface AjaxBaseMapping）
+        const own = r.paths.length ? r.paths : [''];
+        for (const mb of metaBases) {
+          for (const p of own) result.paths.push(joinRawPathForParser(mb, p));
+        }
+      } else {
+        result.paths.push(...r.paths);
+      }
     }
     classBaseCache.set(cls.start, result);
     return result;
   };
 
   for (const a of annotations) {
-    const mappingMethods = MAPPING_ANNOTATIONS[a.name];
-    if (!mappingMethods) continue;
+    const mapping = registry[a.name];
+    if (!mapping) continue;
     if (classLevelAnnotationStarts.has(a.start)) continue; // 类级注解，跳过
 
     const annLine = offsetToLine(lineStarts, a.start);
     const cls = findEnclosingClass(classes, a.start, lineStarts, lineDepth);
-    const base = classBasePaths(cls);
+    const baseRes = classBasePaths(cls);
 
-    const methodPaths = extractPaths(a.argsText, constants);
-    let httpMethods = mappingMethods.length ? mappingMethods.slice() : extractRequestMethods(a.argsText);
+    const methodPaths = extractPaths(a.argsText, constants, pathAttributes);
+    let httpMethods = mapping.methods && mapping.methods.length
+      ? mapping.methods.slice()
+      : extractRequestMethods(a.argsText);
     if (!httpMethods.length) httpMethods = ['ANY'];
 
-    const head = declarationHead(masked, a.end);
+    // @ApiOperation(value="x") 这类注解会被跳过，保证方法名能取到
+    const head = declarationHead(masked, skipForwardAnnotations(annotations, a.end, masked));
     const methodName = methodNameFromHead(head.head);
     const signature = head.head.replace(/\s+/g, ' ').trim();
     const methodLine = methodName
@@ -482,34 +657,40 @@ function parseJavaFile(text) {
       : annLine;
 
     // 常量解析不出来时用 ** 兜底，保证还能按剩余片段搜到
-    const baseList = base.known ? (base.paths.length ? base.paths : ['']) : ['**'];
+    const prefixList = baseRes.known ? (baseRes.paths.length ? baseRes.paths : ['']) : ['**'];
+    const annBases = baseRes.known && mapping.basePaths && mapping.basePaths.length
+      ? mapping.basePaths
+      : [''];
     const methodList = methodPaths.known ? (methodPaths.paths.length ? methodPaths.paths : ['']) : ['**'];
 
     const seen = new Set();
-    for (const b of baseList) {
-      for (const mp of methodList) {
-        const rawPath = joinRawPathForParser(b, mp);
-        if (seen.has(rawPath)) continue;
-        seen.add(rawPath);
-        endpoints.push({
-          className: cls ? cls.name : '',
-          classNameLine: cls ? cls.line : annLine,
-          methodName: methodName || '(未知)',
-          annotation: a.name,
-          httpMethods,
-          rawPath,
-          classPath: b,
-          methodPath: mp,
-          pathKnown: base.known && methodPaths.known,
-          line: annLine,
-          character: a.start - lineStarts[annLine],
-          methodLine,
-          signature,
-        });
+    for (const b of prefixList) {
+      for (const ab of annBases) {
+        for (const mp of methodList) {
+          const rawPath = joinRawPathForParser(joinRawPathForParser(b, ab), mp);
+          if (seen.has(rawPath)) continue;
+          seen.add(rawPath);
+          endpoints.push({
+            className: cls ? cls.name : '',
+            classNameLine: cls ? cls.line : annLine,
+            methodName: methodName || '(未知)',
+            annotation: a.name,
+            httpMethods,
+            rawPath,
+            classPath: b,
+            annotationPath: ab,
+            methodPath: mp,
+            pathKnown: baseRes.known && methodPaths.known,
+            line: annLine,
+            character: a.start - lineStarts[annLine],
+            methodLine,
+            signature,
+          });
+        }
       }
     }
   }
-  return { endpoints, classCount: classes.length };
+  return { endpoints, classCount: classes.length, discovered, annotationNames };
 }
 
 /** 简化版路径拼接（避免循环依赖 pathMatcher） */
@@ -530,11 +711,17 @@ function originalOf(text) {
 
 module.exports = {
   MAPPING_ANNOTATIONS,
+  BUILTIN_MAPPINGS,
+  DEFAULT_PATH_ATTRIBUTES,
+  normalizeRegistry,
+  parseMappingAnnotationSpec,
   maskCode,
   parseJavaFile,
+  discoverComposedAnnotations,
   extractPaths,
   evaluateStringExpression,
   extractConstants,
   splitTopLevel,
   findAnnotations,
+  findClassDeclarations,
 };

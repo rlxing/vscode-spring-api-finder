@@ -10,7 +10,7 @@
  *   relativePath(fsPath): string
  */
 
-const { parseJavaFile } = require('./springParser');
+const { parseJavaFile, MAPPING_ANNOTATIONS, parseMappingAnnotationSpec } = require('./springParser');
 const { normalizePath, scoreMatch, wildcardPenalty } = require('./pathMatcher');
 
 const READ_CONCURRENCY = 8;
@@ -26,7 +26,34 @@ class EndpointIndex {
     this._pathDirty = true;
     this.contextPaths = [];
     this.extraPrefixes = [];
+    /** 配置：自定义映射注解清单，如 ['ZmqRequestMapping:ZMQ'] */
+    this.mappingAnnotations = [];
+    /** 配置：从注解参数里认哪些属性名是路径，如 ['value','path','url','uri'] */
+    this.pathAttributes = [];
+    /** 配置：是否自动识别组合注解（被 @PostMapping 标注的 @interface） */
+    this.discoverComposed = true;
+    /** 自动识别到的组合注解：name -> {name, methods, basePaths, via, line} */
+    this.discovered = new Map();
+    this.discoveredAnnotations = [];
     this.built = false;
+  }
+
+  /** 当前生效的映射注解表：Spring 内置 + 用户配置 + 自动识别到的组合注解 */
+  buildRegistry() {
+    const reg = Object.assign({}, MAPPING_ANNOTATIONS, parseMappingAnnotationSpec(this.mappingAnnotations));
+    for (const [name, d] of this.discovered) {
+      reg[name] = { methods: d.methods || [], basePaths: d.basePaths };
+    }
+    return reg;
+  }
+
+  /** 传给解析器的参数 */
+  parseOptions() {
+    return {
+      mappingAnnotations: this.buildRegistry(),
+      pathAttributes: this.pathAttributes && this.pathAttributes.length ? this.pathAttributes : undefined,
+      discoverComposed: this.discoverComposed !== false,
+    };
   }
 
   get size() {
@@ -36,6 +63,8 @@ class EndpointIndex {
   /** 清空索引（配置变更/重建用） */
   clear() {
     this.byFile.clear();
+    this.discovered = new Map();
+    this.discoveredAnnotations = [];
     this._dirty = true;
     this._pathDirty = true;
     this.built = false;
@@ -64,34 +93,74 @@ class EndpointIndex {
   /** 全量重建索引 */
   async rebuild(token, onProgress) {
     const files = await this.host.findJavaFiles();
-    const next = new Map();
+    const records = new Map();
+    this.discovered = new Map();
+    this.discoveredAnnotations = [];
     let done = 0;
     const total = files.length;
     const queue = files.slice();
+
+    /** 读文件 + 解析，并把新发现的组合注解收进注册表 */
+    const readParse = async (file) => {
+      let text;
+      try {
+        text = await this.host.readText(file);
+      } catch (e) {
+        return null; // 单个文件失败不影响整体
+      }
+      const result = parseJavaFile(text, this.parseOptions());
+      for (const d of result.discovered) {
+        if (!this.discovered.has(d.name)) this.discovered.set(d.name, d);
+      }
+      return result;
+    };
+
     const worker = async () => {
       for (;;) {
         if (token && token.isCancellationRequested) return;
         const file = queue.shift();
         if (!file) return;
-        try {
-          const text = await this.host.readText(file);
-          const { endpoints } = parseJavaFile(text);
-          if (endpoints.length) {
-            const prepared = endpoints.map((e) => this.decorate(e, file));
-            next.set(file.key, { file, endpoints: prepared });
-          }
-        } catch (e) {
-          // 单个文件失败不影响整体
-        }
+        const result = await readParse(file);
+        if (result) records.set(file.key, { file, result });
         done++;
         if (onProgress && (done % 20 === 0 || done === total)) onProgress(done, total);
       }
     };
     await Promise.all(new Array(Math.min(READ_CONCURRENCY, Math.max(1, total))).fill(0).map(worker));
     if (token && token.isCancellationRequested) return false;
+
+    // 组合注解可能"定义在 A 文件、用在 B 文件"，把用到它们的文件重解析一遍（链式注解最多几轮）
+    for (let round = 0; round < 4 && this.discovered.size; round++) {
+      const known = new Set(this.discovered.keys());
+      const affected = [];
+      for (const rec of records.values()) {
+        const used = rec.result.annotationNames || [];
+        if (used.some((n) => known.has(n))) affected.push(rec);
+      }
+      if (!affected.length) break;
+      let grew = false;
+      for (const rec of affected) {
+        const sizeBefore = this.discovered.size;
+        const result = await readParse(rec.file);
+        if (!result) continue;
+        rec.result = result;
+        if (this.discovered.size > sizeBefore) grew = true;
+      }
+      if (!grew) break;
+    }
+
+    const next = new Map();
+    for (const rec of records.values()) {
+      if (!rec.result.endpoints.length) continue;
+      next.set(rec.file.key, {
+        file: rec.file,
+        endpoints: rec.result.endpoints.map((e) => this.decorate(e, rec.file)),
+      });
+    }
     this.byFile = next;
     this._dirty = true;
     this._pathDirty = true;
+    this.discoveredAnnotations = [...this.discovered.values()];
     this.contextPaths = await this.detectContextPaths().catch(() => []);
     this.built = true;
     return true;
@@ -101,9 +170,17 @@ class EndpointIndex {
   async updateFile(file) {
     try {
       const text = await this.host.readText(file);
-      const { endpoints } = parseJavaFile(text);
-      if (endpoints.length) {
-        this.byFile.set(file.key, { file, endpoints: endpoints.map((e) => this.decorate(e, file)) });
+      const result = parseJavaFile(text, this.parseOptions());
+      let discoveredNew = false;
+      for (const d of result.discovered) {
+        if (!this.discovered.has(d.name)) {
+          this.discovered.set(d.name, d);
+          discoveredNew = true;
+        }
+      }
+      if (discoveredNew) this.discoveredAnnotations = [...this.discovered.values()];
+      if (result.endpoints.length) {
+        this.byFile.set(file.key, { file, endpoints: result.endpoints.map((e) => this.decorate(e, file)) });
       } else {
         this.byFile.delete(file.key);
       }

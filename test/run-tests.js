@@ -6,7 +6,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { parseJavaFile } = require('../src/springParser');
+const { parseJavaFile, parseMappingAnnotationSpec } = require('../src/springParser');
 const { scoreMatch, normalizePath, isProbablyPath, isExcludedPath, SCORE } = require('../src/pathMatcher');
 const { EndpointIndex } = require('../src/endpointIndex');
 
@@ -295,6 +295,153 @@ function makeDiskHost(roots) {
     assert.strictEqual(isExcludedPath('/home/u/proj/src/main/java/A.java', globs), false);
     assert.strictEqual(isExcludedPath('/home/u/proj/src/TargetHelper.java', globs), false);
   });
+
+  console.log('\n[10] 自定义注解（如 ZmqRequestMapping）');
+  const ZMQ_DIR = path.join(__dirname, 'fixtures', 'zmq');
+  const zmqCtrl = fs.readFileSync(
+    path.join(ZMQ_DIR, 'com', 'dfe', 'extend_features', 'controller', 'AnalysisLsfsController.java'),
+    'utf8'
+  );
+  test('配置 extraMappingAnnotations 后，ZmqRequestMapping 被当成接口', () => {
+    const r = parseJavaFile(zmqCtrl, { mappingAnnotations: { ZmqRequestMapping: { methods: ['ZMQ'] } } });
+    assert.strictEqual(r.endpoints.length, 1);
+    assert.strictEqual(r.endpoints[0].rawPath, '/AnalysisLsfsController/analysisOcsLsfs');
+    assert.strictEqual(r.endpoints[0].httpMethods.join('/'), 'ZMQ');
+  });
+  test('类上的 ZmqRequestMapping 当路径前缀，不会单独变成接口', () => {
+    const r = parseJavaFile(zmqCtrl, { mappingAnnotations: { ZmqRequestMapping: { methods: ['ZMQ'] } } });
+    assert.ok(!r.endpoints.some((e) => e.rawPath === '/AnalysisLsfsController'));
+  });
+  test('方法上夹着 @ApiOperation(value=...) 也能取到方法名（回归）', () => {
+    const r = parseJavaFile(zmqCtrl, { mappingAnnotations: { ZmqRequestMapping: { methods: ['ZMQ'] } } });
+    assert.strictEqual(r.endpoints[0].methodName, 'analysisOcsLsfs');
+    assert.strictEqual(r.endpoints[0].signature, 'public R analysisOcsLsfs()');
+  });
+  test('不配置时完全不受影响（默认只认 Spring 注解）', () => {
+    assert.strictEqual(parseJavaFile(zmqCtrl).endpoints.length, 0);
+  });
+  test('配置写法解析：名称 / 名称:动词 / 全限定名', () => {
+    const specs = parseMappingAnnotationSpec([
+      'ZmqRequestMapping:ZMQ',
+      'com.dfe.kserver.annotation.AjaxMapping:POST,GET',
+      'PlainMapping',
+    ]);
+    assert.deepStrictEqual(specs.ZmqRequestMapping.methods, ['ZMQ']);
+    assert.deepStrictEqual(specs.AjaxMapping.methods, ['POST', 'GET']);
+    assert.deepStrictEqual(specs.PlainMapping.methods, []);
+  });
+  test('自定义路径属性名（pathAttributeNames）', () => {
+    const text = 'class A {\n  @ZmqRequestMapping(topic = "/signal/health")\n  void h() {}\n}';
+    const withTopic = parseJavaFile(text, {
+      mappingAnnotations: { ZmqRequestMapping: { methods: ['ZMQ'] } },
+      pathAttributes: ['value', 'path', 'topic'],
+    });
+    assert.strictEqual(withTopic.endpoints[0].rawPath, '/signal/health');
+    const without = parseJavaFile(text, { mappingAnnotations: { ZmqRequestMapping: { methods: ['ZMQ'] } } });
+    assert.strictEqual(without.endpoints[0].rawPath, '/');
+  });
+
+  console.log('\n[11] 组合注解自动识别（跨文件）');
+  const COMPOSED_DIR = path.join(__dirname, 'fixtures', 'composed');
+  test('单文件：@PostMapping 标注的 @interface 被识别为 POST', () => {
+    const r = parseJavaFile(fs.readFileSync(path.join(COMPOSED_DIR, 'AjaxPostMapping.java'), 'utf8'));
+    assert.deepStrictEqual(r.discovered.map((d) => d.name), ['AjaxPostMapping']);
+    assert.deepStrictEqual(r.discovered[0].methods, ['POST']);
+  });
+  test('单文件：@RequestMapping("/ajax") 标注的 @interface 继承固定路径', () => {
+    const r = parseJavaFile(fs.readFileSync(path.join(COMPOSED_DIR, 'AjaxBaseMapping.java'), 'utf8'));
+    assert.deepStrictEqual(r.discovered[0].basePaths, ['/ajax']);
+  });
+  test('注解声明本身不会变成接口（@PostMapping 不该产出 "/"）', () => {
+    const r = parseJavaFile(fs.readFileSync(path.join(COMPOSED_DIR, 'AjaxPostMapping.java'), 'utf8'));
+    assert.strictEqual(r.endpoints.length, 0);
+  });
+  test('单文件解析：用了但没见过的注解不产出接口', () => {
+    const r = parseJavaFile(fs.readFileSync(path.join(COMPOSED_DIR, 'AjaxController.java'), 'utf8'));
+    assert.strictEqual(r.endpoints.length, 0);
+  });
+
+  const composed = new EndpointIndex(makeDiskHost([COMPOSED_DIR, ZMQ_DIR]));
+  composed.mappingAnnotations = ['ZmqRequestMapping:ZMQ'];
+  await composed.rebuild();
+  const cTop = (q) => {
+    const m = composed.query(q);
+    return m.length ? m[0].endpoint : null;
+  };
+  test('索引级：跨文件识别到两个组合注解', () => {
+    const names = composed.discoveredAnnotations.map((d) => d.name).sort();
+    assert.deepStrictEqual(names, ['AjaxBaseMapping', 'AjaxPostMapping']);
+  });
+  test('索引级：@AjaxPostMapping("/submit") + 类级 /ajax -> POST /ajax/submit', () => {
+    const ep = cTop('/ajax/submit');
+    assert.ok(ep, '没命中');
+    assert.strictEqual(ep.rawPath, '/ajax/submit');
+    assert.strictEqual(ep.httpMethods.join('/'), 'POST');
+    assert.strictEqual(ep.methodName, 'submit');
+  });
+  test('索引级：value= 形式 + 额外属性 name= 也能取到路径', () => {
+    const ep = cTop('/ajax/save');
+    assert.ok(ep, '没命中');
+    assert.strictEqual(ep.methodName, 'save');
+  });
+  test('索引级：ZmqRequestMapping 走配置后能搜到', () => {
+    const ep = cTop('/AnalysisLsfsController/analysisOcsLsfs');
+    assert.ok(ep, '没命中');
+    assert.strictEqual(ep.httpMethods.join('/'), 'ZMQ');
+    assert.strictEqual(ep.className, 'AnalysisLsfsController');
+  });
+  const noDiscover = new EndpointIndex(makeDiskHost([COMPOSED_DIR]));
+  noDiscover.discoverComposed = false;
+  await noDiscover.rebuild();
+  test('discoverComposedAnnotations=false 时，@AjaxPostMapping 不产出接口', () => {
+    assert.strictEqual(noDiscover.size, 0);
+    assert.deepStrictEqual(noDiscover.discoveredAnnotations, []);
+  });
+
+  console.log('\n[12] 本机真实项目（可选，用环境变量指定，避免把内部路径写进仓库）');
+  // 用法（PowerShell）：
+  //   $env:SPRING_API_TEST_ROOTS="D:\proj\my-module"
+  //   $env:SPRING_API_TEST_ANNOTATIONS="ZmqRequestMapping:ZMQ"
+  //   $env:SPRING_API_TEST_PREFIXES="/kapi/json"
+  const splitList = (name, sep) => (process.env[name] || '').split(sep).map((s) => s.trim()).filter(Boolean);
+  const EXTRA_ROOTS = splitList('SPRING_API_TEST_ROOTS', path.delimiter);
+  const EXTRA_ANNOTATIONS = splitList('SPRING_API_TEST_ANNOTATIONS', ',');
+  const EXTRA_PREFIXES = splitList('SPRING_API_TEST_PREFIXES', ',');
+  const existingRoots = EXTRA_ROOTS.map((r) => path.resolve(r)).filter((r) => fs.existsSync(r));
+  if (!existingRoots.length) {
+    console.log('  (跳过：可用 SPRING_API_TEST_ROOTS 指定本机真实项目目录，见 README)');
+  }
+  for (const root of existingRoots) {
+    const label = path.basename(root);
+    const extra = new EndpointIndex(makeDiskHost([root]));
+    extra.mappingAnnotations = EXTRA_ANNOTATIONS;
+    extra.extraPrefixes = EXTRA_PREFIXES;
+    await extra.rebuild();
+
+    test(`额外项目 ${label}：索引到 ${extra.size} 个接口`, () => {
+      assert.ok(extra.size > 0, '一个接口都没解析出来');
+    });
+    test(`额外项目 ${label}：所有接口都解析出了方法名（无 "(未知)"）`, () => {
+      const bad = extra.all.filter((e) => e.methodName === '(未知)');
+      assert.strictEqual(bad.length, 0, '未解析出方法名: ' + bad.slice(0, 3).map((e) => e.rawPath).join(', '));
+    });
+    if (EXTRA_ANNOTATIONS.length) {
+      const wanted = EXTRA_ANNOTATIONS.map((a) => String(a).split(':')[0].split('.').pop());
+      test(`额外项目 ${label}：自定义注解 ${wanted.join('/')} 真的匹配到了接口`, () => {
+        const hit = extra.all.filter((e) => wanted.includes(e.annotation));
+        assert.ok(hit.length > 0, `没有接口用上 ${wanted.join('/')}，检查配置或路径`);
+      });
+    }
+    if (EXTRA_PREFIXES.length) {
+      const sample = extra.all.find((e) => e.pathKnown) || extra.all[0];
+      const q = EXTRA_PREFIXES[0].replace(/\/$/, '') + sample.rawPath;
+      test(`额外项目 ${label}：带网关前缀 ${q} 也能命中`, () => {
+        const m = extra.query(q);
+        assert.ok(m.length, `查询 ${q} 没命中`);
+        assert.strictEqual(m[0].endpoint.rawPath, sample.rawPath);
+      });
+    }
+  }
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败\n`);
   process.exit(failed ? 1 : 0);
