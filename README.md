@@ -352,36 +352,37 @@ npm test
 ### 方式 B：vsix（推荐，版本可控，也适合内网机器）
 
 ```powershell
-# ① 本机生成（仓库已含 .vscodeignore，会自动排除 test/）
+# ① 本机生成（文件名里的版本号来自 package.json）
 cd .\vscode-spring-api-finder
-npx @vscode/vsce package --allow-missing-repository      # 产出 spring-api-finder-0.0.4.vsix
+npx @vscode/vsce package --allow-missing-repository
 
-# ② 拷到远端
-scp .\spring-api-finder-0.0.4.vsix yth@dev179:/tmp/
+# ② 拷到远端（自动取最新生成的那个 vsix）
+$vsix = (Get-ChildItem .\spring-api-finder-*.vsix | Sort-Object LastWriteTime -Desc | Select-Object -First 1).FullName
+scp $vsix yth@dev179:/tmp/
 ```
 
-然后在 SSH 窗口里：扩展面板 → 右上角 `...` → **Install from VSIX...** → 选 `/tmp/spring-api-finder-0.0.4.vsix`
+然后在 SSH 窗口里：扩展面板 → 右上角 `...` → **Install from VSIX...** → 选刚传上去的那个文件
 （在 SSH 窗口里操作，VS Code 会把它装到**远端**）。
 
-也可以在远端终端里装：
+也可以在远端终端里装（文件名用通配符，免得记版本）：
 
 ```bash
-~/.vscode-server/bin/*/bin/remote-cli/code --install-extension /tmp/spring-api-finder-0.0.4.vsix
+~/.vscode-server/bin/*/bin/remote-cli/code --install-extension /tmp/spring-api-finder-*.vsix
 ```
 
 ### 方式 C：直接复制目录（没有 vsix 也能用，最透明）
 
 ```powershell
-# 本机：把整个目录拷到远端 /tmp
-$v = node -p "require('./vscode-spring-api-finder/package.json').version"
-scp -r .\vscode-spring-api-finder yth@dev179:/tmp/spring-api-finder-$v
+# 本机：把整个目录拷到远端
+scp -r .\vscode-spring-api-finder yth@dev179:/tmp/spring-api-finder-new
 ```
 
 ```bash
-# 远端：先删旧版本，再放新版本
+# 远端：读出版本号 -> 先删旧版本 -> 再放新版本（不需要 node）
+v=$(grep -m1 '"version":' /tmp/spring-api-finder-new/package.json | sed 's/.*: *"\([^"]*\)".*/\1/')
 mkdir -p ~/.vscode-server/extensions
-rm -rf ~/.vscode-server/extensions/spring-api-finder-*          # ← 关键
-mv /tmp/spring-api-finder-0.0.4 ~/.vscode-server/extensions/spring-api-finder-0.0.4
+rm -rf ~/.vscode-server/extensions/spring-api-finder-*          # ← 关键：删掉旧版本
+mv /tmp/spring-api-finder-new ~/.vscode-server/extensions/spring-api-finder-$v
 ```
 
 然后在本机 VS Code 的 SSH 窗口执行 **Developer: Reload Window**。
@@ -389,29 +390,32 @@ mv /tmp/spring-api-finder-0.0.4 ~/.vscode-server/extensions/spring-api-finder-0.
 ### 方式 D：远端能上外网时，直接在远端拉 GitHub
 
 ```bash
-cd ~/.vscode-server/extensions
-rm -rf spring-api-finder-*
-git clone --depth 1 https://github.com/rlxing/vscode-spring-api-finder.git /tmp/saf \
-  && cp -r /tmp/saf ~/.vscode-server/extensions/spring-api-finder-0.0.4 \
-  && rm -rf /tmp/saf/.git
+git clone --depth 1 https://github.com/rlxing/vscode-spring-api-finder.git /tmp/saf
+v=$(grep -m1 '"version":' /tmp/saf/package.json | sed 's/.*: *"\([^"]*\)".*/\1/')
+mkdir -p ~/.vscode-server/extensions && rm -rf ~/.vscode-server/extensions/spring-api-finder-*
+cp -r /tmp/saf ~/.vscode-server/extensions/spring-api-finder-$v
+rm -rf ~/.vscode-server/extensions/spring-api-finder-$v/.git
 ```
 
-### 方式 E：走 GitHub Release（远端只需一条 curl）
+### 方式 E：走 GitHub Release（远端只需一条 curl，永远指向最新版）
 
-打 tag 会触发 CI 自动打包并挂到 Release：
+仓库已配好 CI：打 `v*` tag 会自动打包 vsix 并挂到 Release。本机执行：
 
-```bash
-# 本机（仓库目录）
-git tag v0.0.4 && git push origin v0.0.4
+```powershell
+cd .\vscode-spring-api-finder
+$tag = "v" + (node -p "require('./package.json').version")
+git tag $tag; git push origin $tag
 ```
 
-之后在远端（或任何机器）直接下：
+之后在**任何**机器（包括远端）直接下最新发布的 vsix：
 
 ```bash
 curl -L -o /tmp/saf.vsix \
-  https://github.com/rlxing/vscode-spring-api-finder/releases/download/v0.0.4/spring-api-finder.vsix
+  https://github.com/rlxing/vscode-spring-api-finder/releases/latest/download/spring-api-finder.vsix
 ~/.vscode-server/bin/*/bin/remote-cli/code --install-extension /tmp/saf.vsix
 ```
+
+> 注意：`releases/latest/download/...` 用的是"最新一个 Release"，所以远端更新时**不需要改任何 URL**，重新 curl 一次即可。内网机器如果访问不了 GitHub，用方式 B/C。
 
 ### 更新时最容易踩的 4 个坑
 
@@ -423,6 +427,6 @@ curl -L -o /tmp/saf.vsix \
 4. **远端没有外网** —— 用方式 B/C（本机 vsix 或 scp），不要在远端 `git clone`。内网机器推荐方式 B。
 
 验证装对了没：在 **SSH 窗口**里执行 `Spring 接口: 显示版本与索引信息`，
-输出的"扩展目录"应指向远端，例如 `/home/yth/.vscode-server/extensions/spring-api-finder-0.0.4`。
+输出的"扩展目录"应指向远端，例如 `/home/yth/.vscode-server/extensions/spring-api-finder-<版本>`。
 
 MIT License.

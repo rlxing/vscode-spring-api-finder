@@ -109,15 +109,18 @@ check('所有配置项都以 springApi. 开头并有 description', () => {
   assert(Object.keys(props).length >= 8, '配置项数量异常');
 });
 
-check('README 里没有写死的旧版本号（避免"以为装的是旧版"）', () => {
+check('README 里没有写死的版本号（避免"以为装的是旧版"）', () => {
   const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
-  const found = readme.match(/spring-api-finder-0\.0\.\d+/g) || [];
+  // 本项目版号形如 0.0.x；文档里一律要求动态获取或用 releases/latest 链接
+  const found = readme.match(/\b0\.0\.\d+\b/g) || [];
   for (const f of found) {
     assert(
-      f === `spring-api-finder-${pkg.version}`,
-      `README 里写死了旧版本号 ${f}（package.json 当前是 ${pkg.version}），应改成动态获取版本`
+      f === pkg.version,
+      `README 里写死了版本号 ${f}（package.json 当前是 ${pkg.version}）：请改成动态读取版本，或用 releases/latest/download 链接`
     );
   }
+  const misplaced = readme.match(/spring-api-finder-0\.0\.\d+/g) || [];
+  assert(misplaced.length === 0, 'README 里出现了旧式 "spring-api-finder-版本" 写法：' + misplaced.join(', '));
 });
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败\n`);

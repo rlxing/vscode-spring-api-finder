@@ -2,9 +2,17 @@
   "name": "spring-api-finder",
   "displayName": "Spring 接口路径查找器",
   "description": "把类上的 @RequestMapping 和方法上的 @GetMapping 拼成完整路径来搜索：前端写 /kxgdnl/WJDetail 也能一键跳到后端 Controller 方法（支持 Ctrl+点击跳转 / 悬停预览 / 反查前端调用）",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "local",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rlxing/vscode-spring-api-finder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rlxing/vscode-spring-api-finder/issues"
+  },
+  "homepage": "https://github.com/rlxing/vscode-spring-api-finder#readme",
   "engines": {
     "vscode": "^1.75.0"
   },
