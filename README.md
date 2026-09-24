@@ -106,8 +106,11 @@ code --install-extension .\*.vsix        # 装最新生成的那个
 
 ### ⚠️ 用 Remote-SSH / 容器 / WSL 的话
 
-插件必须在**代码所在的那一端**运行（要在那端读 Java 文件）。所以请在扩展面板里选择
-`Install in SSH: 主机名`（或把 vsix 装到远端），而不是只装在本地 UI 端。
+插件要在**代码所在的那一端**运行（它要读那端的 Java 文件），所以**远端必须单独装一份**，只装本地不生效。
+插件的 `extensionKind` 只声明了 `workspace`，正是为了保证"在哪写代码就在哪索引"。
+
+四种安装方式（图形界面 / vsix / scp / 远端 git）以及**怎么更新、怎么排掉旧版本**，
+见文末 **[十一、远程（Remote-SSH / WSL / 容器）安装与更新](#十一远程remote-ssh--wsl--容器安装与更新)**。
 
 ---
 
@@ -321,5 +324,105 @@ npm test
 - 组合注解只解析**静态**写法：`@RequestMapping("/a")` 这种固定前缀能继承；用注解参数动态拼路径的表达式不解析。
 - 索引的是**磁盘文件**；新写的接口未保存时 CodeLens 可能还没更新（保存后 ~0.4 秒自动增量刷新）。
 - 同名后缀路径（如很多 `/detail`）会一起列出，靠 QuickPick 选择。
+
+---
+
+## 十一、远程（Remote-SSH / WSL / 容器）安装与更新
+
+**为什么远端要单独装？** 插件是 `extensionKind: ["workspace"]`，会运行在"代码所在的一端"。
+远端窗口里，本机那份不会生效（扩展列表里会提示装到远端），因为本机进程读不到远端的 Java 文件。
+
+**远端扩展目录在哪？**
+
+| 远端类型 | 扩展目录 |
+| --- | --- |
+| Linux / macOS 服务器 | `~/.vscode-server/extensions/` |
+| WSL | WSL 发行版里的 `~/.vscode-server/extensions/` |
+| 容器 / devcontainer | 容器里的 `~/.vscode-server/extensions/` |
+| Windows 远端 | `%USERPROFILE%\.vscode-server\extensions\` |
+
+### 方式 A：图形界面（最省事）
+
+1. 连上远端（左下角显示 `SSH: 主机名`）；
+2. 打开扩展面板，搜到本插件后点齿轮 / 云朵按钮 → **Install in SSH: 主机名**
+   （较新版本也可以先在"本地已安装"里勾选，再用 **Install Local Extensions in SSH**）；
+3. **Developer: Reload Window** 重载远端窗口；
+4. 重载后到远端执行 `Spring 接口: 显示版本与索引信息` 确认版本，并顺手删掉旧版本目录（见下方"踩坑 1"）。
+
+### 方式 B：vsix（推荐，版本可控，也适合内网机器）
+
+```powershell
+# ① 本机生成（仓库已含 .vscodeignore，会自动排除 test/）
+cd .\vscode-spring-api-finder
+npx @vscode/vsce package --allow-missing-repository      # 产出 spring-api-finder-0.0.4.vsix
+
+# ② 拷到远端
+scp .\spring-api-finder-0.0.4.vsix yth@dev179:/tmp/
+```
+
+然后在 SSH 窗口里：扩展面板 → 右上角 `...` → **Install from VSIX...** → 选 `/tmp/spring-api-finder-0.0.4.vsix`
+（在 SSH 窗口里操作，VS Code 会把它装到**远端**）。
+
+也可以在远端终端里装：
+
+```bash
+~/.vscode-server/bin/*/bin/remote-cli/code --install-extension /tmp/spring-api-finder-0.0.4.vsix
+```
+
+### 方式 C：直接复制目录（没有 vsix 也能用，最透明）
+
+```powershell
+# 本机：把整个目录拷到远端 /tmp
+$v = node -p "require('./vscode-spring-api-finder/package.json').version"
+scp -r .\vscode-spring-api-finder yth@dev179:/tmp/spring-api-finder-$v
+```
+
+```bash
+# 远端：先删旧版本，再放新版本
+mkdir -p ~/.vscode-server/extensions
+rm -rf ~/.vscode-server/extensions/spring-api-finder-*          # ← 关键
+mv /tmp/spring-api-finder-0.0.4 ~/.vscode-server/extensions/spring-api-finder-0.0.4
+```
+
+然后在本机 VS Code 的 SSH 窗口执行 **Developer: Reload Window**。
+
+### 方式 D：远端能上外网时，直接在远端拉 GitHub
+
+```bash
+cd ~/.vscode-server/extensions
+rm -rf spring-api-finder-*
+git clone --depth 1 https://github.com/rlxing/vscode-spring-api-finder.git /tmp/saf \
+  && cp -r /tmp/saf ~/.vscode-server/extensions/spring-api-finder-0.0.4 \
+  && rm -rf /tmp/saf/.git
+```
+
+### 方式 E：走 GitHub Release（远端只需一条 curl）
+
+打 tag 会触发 CI 自动打包并挂到 Release：
+
+```bash
+# 本机（仓库目录）
+git tag v0.0.4 && git push origin v0.0.4
+```
+
+之后在远端（或任何机器）直接下：
+
+```bash
+curl -L -o /tmp/saf.vsix \
+  https://github.com/rlxing/vscode-spring-api-finder/releases/download/v0.0.4/spring-api-finder.vsix
+~/.vscode-server/bin/*/bin/remote-cli/code --install-extension /tmp/saf.vsix
+```
+
+### 更新时最容易踩的 4 个坑
+
+1. **忘了删旧版本目录** —— 同一个 `local.spring-api-finder` 出现两份时，VS Code 只会用其中一份（往往是旧的），
+   表现就是"更新了但版本没变"。务必先 `rm -rf ~/.vscode-server/extensions/spring-api-finder-*`。
+2. **只 Reload 了本地窗口** —— 改的是远端目录，就必须重载**远端窗口**（左下角是 `SSH: ...` 的那个）。
+3. **配置的作用域** —— `springApi.extraMappingAnnotations` 等配在 **User（用户）** 层对本地和远端窗口都生效；
+   只想对某台远端生效，就配在 `Remote [SSH: 主机名]`；跟着仓库走就写在项目 `.vscode/settings.json`。
+4. **远端没有外网** —— 用方式 B/C（本机 vsix 或 scp），不要在远端 `git clone`。内网机器推荐方式 B。
+
+验证装对了没：在 **SSH 窗口**里执行 `Spring 接口: 显示版本与索引信息`，
+输出的"扩展目录"应指向远端，例如 `/home/yth/.vscode-server/extensions/spring-api-finder-0.0.4`。
 
 MIT License.

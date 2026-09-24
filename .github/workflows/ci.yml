@@ -35,8 +35,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npx --yes @vscode/vsce package --out spring-api-finder.vsix
+      - run: npx --yes @vscode/vsce package --allow-missing-repository --out spring-api-finder.vsix
       - name: 上传到 Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release create "$GITHUB_REF_NAME" spring-api-finder.vsix --generate-notes
+
