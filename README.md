@@ -73,22 +73,31 @@ return request({ url: '/kxgdnl/WJDetail', method: 'get' })
 
 ### 方式 1：直接复制目录（推荐，不用联网）
 
-把 `vscode-spring-api-finder` 整个文件夹复制到 VS Code 扩展目录，并改名为 `spring-api-finder-0.0.1`：
+把 `vscode-spring-api-finder` 整个文件夹复制到 VS Code 扩展目录，文件夹名建议为 `spring-api-finder-<package.json 里的 version>`：
 
 ```powershell
-$dst = "$env:USERPROFILE\.vscode\extensions\spring-api-finder-0.0.1"
-Copy-Item -Recurse -Force ".\vscode-spring-api-finder" $dst
-# 然后完全退出并重新打开 VS Code
+# 自动读取当前版本号，避免文件夹名与版本不一致
+$src = ".\vscode-spring-api-finder"
+$v   = node -p "require('./vscode-spring-api-finder/package.json').version"
+$dst = "$env:USERPROFILE\.vscode\extensions\spring-api-finder-$v"
+if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+Copy-Item -Recurse -Force $src $dst
+# 然后完全退出并重新打开 VS Code（只关窗口不够，要退出所有窗口）
 ```
 
-卸载就是删掉那个目录。
+卸载就是删掉 `<扩展目录>\spring-api-finder-*` 那个目录。升级同理：删掉旧目录再复制新的（**同一个扩展 id 不能同时存在两个版本目录**，否则会互相干扰）。
+
+> 怎么确认当前装的是哪个版本？三种办法任选：
+> 1. 命令面板执行 `Spring 接口: 显示版本与索引信息`（最直接，会打印版本 + 索引统计 + 扩展目录）；
+> 2. 终端执行 `code --list-extensions --show-versions`，看 `local.spring-api-finder@版本`；
+> 3. VS Code 右下角状态栏悬停看提示，或输出面板 → "Spring 接口查找" 的第一行 `[插件] ... v版本 已激活`。
 
 ### 方式 2：打包成 vsix 再安装
 
 ```powershell
 cd .\vscode-spring-api-finder
-npx @vscode/vsce package           # 生成 spring-api-finder-0.0.1.vsix
-code --install-extension .\spring-api-finder-0.0.1.vsix
+npx @vscode/vsce package                 # 生成 spring-api-finder-<version>.vsix
+code --install-extension .\*.vsix        # 装最新生成的那个
 ```
 
 ### 方式 3：改代码调试（F5）

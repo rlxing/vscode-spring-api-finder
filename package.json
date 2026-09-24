@@ -2,7 +2,7 @@
   "name": "spring-api-finder",
   "displayName": "Spring 接口路径查找器",
   "description": "把类上的 @RequestMapping 和方法上的 @GetMapping 拼成完整路径来搜索：前端写 /kxgdnl/WJDetail 也能一键跳到后端 Controller 方法（支持 Ctrl+点击跳转 / 悬停预览 / 反查前端调用）",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -63,6 +63,18 @@
         "command": "springApi.openEndpoint",
         "title": "Spring 接口: 打开接口对应的 Controller 方法",
         "category": "Spring 接口"
+      },
+      {
+        "command": "springApi.showInfo",
+        "title": "Spring 接口: 显示版本与索引信息",
+        "category": "Spring 接口",
+        "icon": "$(info)"
+      },
+      {
+        "command": "springApi.collapseAll",
+        "title": "Spring 接口: 折叠全部",
+        "category": "Spring 接口",
+        "icon": "$(collapse-all)"
       }
     ],
     "viewsContainers": {
@@ -142,7 +154,7 @@
           "group": "navigation@2"
         },
         {
-          "command": "workbench.actions.treeView.springApi.endpoints.collapseAll",
+          "command": "springApi.collapseAll",
           "when": "view == springApi.endpoints",
           "group": "navigation@3"
         }

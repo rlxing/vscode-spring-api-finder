@@ -50,11 +50,18 @@ check('快捷键指向已注册的命令', () => {
   }
 });
 
-check('菜单项指向已注册的命令（内置 workbench.* 除外）', () => {
+// VS Code 内置命令允许直接引用；当前没用到，一旦要用必须在这里登记，
+// 否则会重现 "菜单项引用未在命令部分进行定义的命令" 这类运行时报错
+const ALLOWED_BUILTIN_COMMANDS = new Set([]);
+
+check('菜单项引用的命令都已声明（含 workbench.*）', () => {
   for (const [group, items] of Object.entries(c.menus || {})) {
     for (const item of items) {
-      if (item.command.startsWith('workbench.')) continue; // VS Code 内置命令
-      assert(commandIds.has(item.command), `${group} 里引用了不存在的命令: ${item.command}`);
+      if (ALLOWED_BUILTIN_COMMANDS.has(item.command)) continue;
+      assert(
+        commandIds.has(item.command),
+        `${group} 里引用了未在 contributes.commands 声明的命令: ${item.command}`
+      );
     }
   }
 });
@@ -100,6 +107,17 @@ check('所有配置项都以 springApi. 开头并有 description', () => {
     assert(def.description, '配置项缺少说明: ' + key);
   }
   assert(Object.keys(props).length >= 8, '配置项数量异常');
+});
+
+check('README 里没有写死的旧版本号（避免"以为装的是旧版"）', () => {
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const found = readme.match(/spring-api-finder-0\.0\.\d+/g) || [];
+  for (const f of found) {
+    assert(
+      f === `spring-api-finder-${pkg.version}`,
+      `README 里写死了旧版本号 ${f}（package.json 当前是 ${pkg.version}），应改成动态获取版本`
+    );
+  }
 });
 
 console.log(`\n结果: ${passed} 通过, ${failed} 失败\n`);

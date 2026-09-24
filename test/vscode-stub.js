@@ -116,6 +116,7 @@ function create(options = {}) {
     openedPaths: [],
     watchers: 0,
     treeViews: [],
+    outputLines: [],
     inputValue: options.inputValue,
     infoMessages: [],
     warnings: [],
@@ -175,7 +176,16 @@ function create(options = {}) {
     window: {
       activeTextEditor: options.activeTextEditor || undefined,
       createOutputChannel() {
-        return { appendLine() {}, append() {}, show() {}, dispose() {} };
+        return {
+          appendLine(line) {
+            state.outputLines.push(String(line));
+          },
+          append(text) {
+            state.outputLines.push(String(text));
+          },
+          show() {},
+          dispose() {},
+        };
       },
       createStatusBarItem() {
         return { text: '', tooltip: '', command: '', show() {}, hide() {}, dispose() {} };

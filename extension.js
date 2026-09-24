@@ -45,6 +45,7 @@ let statusBar;
 let tree;
 let treeView;
 let ensurePromise = null;
+let pluginVersion = '未知';
 const pendingUpdates = new Map();
 
 /** 刷新侧边栏接口树 + 活动栏角标 */
@@ -170,10 +171,10 @@ function updateStatusBar() {
   }
   if (!index.built) {
     statusBar.text = '$(symbol-method) 接口索引未建立';
-    statusBar.tooltip = '点击建立索引并搜索接口';
+    statusBar.tooltip = `点击建立索引并搜索接口\nSpring 接口路径查找器 v${pluginVersion}`;
   } else {
     statusBar.text = `$(symbol-method) 接口 ${index.size}`;
-    statusBar.tooltip = '点击搜索接口路径（类路径 + 方法路径已合并）';
+    statusBar.tooltip = `点击搜索接口路径（类路径 + 方法路径已合并）\nSpring 接口路径查找器 v${pluginVersion}`;
   }
   statusBar.command = 'springApi.search';
   statusBar.show();
@@ -548,6 +549,15 @@ async function findFrontendUsages(ep) {
 
 function activate(context) {
   output = vscode.window.createOutputChannel('Spring 接口查找');
+  // 运行中的版本号：取自 VS Code 实际加载的 manifest，便于排查"装的到底是哪个版本"
+  pluginVersion = (context
+    && context.extension
+    && context.extension.packageJSON
+    && context.extension.packageJSON.version)
+    || (require('./package.json').version)
+    || '未知';
+  output.appendLine(`[插件] Spring 接口路径查找器 v${pluginVersion} 已激活（${(context && context.extensionPath) || '路径未知'}）`);
+
   index = new EndpointIndex(createHost());
   applyConfigToIndex();
 
@@ -605,6 +615,32 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('springApi.reindex', forceReindex)
+  );
+
+  // 折叠全部：直接委托给 VS Code 为树视图内置注册的命令
+  context.subscriptions.push(
+    vscode.commands.registerCommand('springApi.collapseAll', () =>
+      vscode.commands.executeCommand('workbench.actions.treeView.springApi.endpoints.collapseAll'))
+  );
+
+  // 显示版本与索引信息（排查"我装的到底是哪个版本"最直接）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('springApi.showInfo', async () => {
+      const configured = (index.mappingAnnotations || []).join('、') || '(未配置)';
+      const discovered = (index.discoveredAnnotations || []).map((d) => d.name).join('、') || '(无)';
+      const prefixes = index.getPrefixes().join('、') || '(无)';
+      const lines = [
+        `版本: v${pluginVersion}`,
+        `接口数量: ${index.built ? index.size : '索引未建立'}`,
+        `自定义映射注解: ${configured}`,
+        `自动识别的组合注解: ${discovered}`,
+        `忽略前缀: ${prefixes}`,
+        `扩展目录: ${(context && context.extensionPath) || '(未知)'}`,
+      ];
+      output.appendLine(`[信息] ${lines.join(' | ')}`);
+      output.show(true);
+      vscode.window.setStatusBarMessage(`$(info) Spring 接口 v${pluginVersion} · ${index.built ? index.size + ' 个接口' : '索引未建立'}`, 8000);
+    })
   );
 
   context.subscriptions.push(

@@ -63,7 +63,11 @@ function findLineWith(doc, needle) {
 
 (async () => {
   console.log('\n[8] 插件激活冒烟测试（VS Code API 桩）');
-  const context = { subscriptions: [] };
+  const context = {
+    subscriptions: [],
+    extensionPath: '/stub/spring-api-finder',
+    extension: { packageJSON: { version: '0.0.3-stub' } },
+  };
   const ext = require('../extension.js');
 
   test('activate() 不抛异常', () => {
@@ -71,7 +75,7 @@ function findLineWith(doc, needle) {
   });
 
   const commands = [...stub._state.commands.keys()];
-  test('注册了全部 6 个命令', () => {
+  test('注册了全部 8 个命令', () => {
     for (const id of [
       'springApi.search',
       'springApi.searchSelection',
@@ -79,9 +83,24 @@ function findLineWith(doc, needle) {
       'springApi.reindex',
       'springApi.copyEndpointPath',
       'springApi.openEndpoint',
+      'springApi.showInfo',
+      'springApi.collapseAll',
     ]) {
       assert.ok(commands.includes(id), `缺少命令 ${id}，实际: ${commands.join(', ')}`);
     }
+  });
+  test('输出面板记录了运行中的版本号（排查装错版本用）', () => {
+    const line = stub._state.outputLines.find((l) => /已激活/.test(l));
+    assert.ok(line, '输出面板没有激活日志: ' + JSON.stringify(stub._state.outputLines.slice(0, 3)));
+    assert.ok(/v0\.0\.3-stub/.test(line), '激活日志里没有版本号: ' + line);
+  });
+  const beforeInfo = stub._state.outputLines.length;
+  await stub._state.commands.get('springApi.showInfo')();
+  test('showInfo 打印版本 + 索引统计 + 扩展目录', () => {
+    const added = stub._state.outputLines.slice(beforeInfo).join('\n');
+    assert.ok(/v0\.0\.3-stub/.test(added), 'showInfo 没打印版本: ' + added);
+    assert.ok(/\/stub\/spring-api-finder/.test(added), 'showInfo 没打印扩展目录: ' + added);
+    assert.ok(/接口数量/.test(added), 'showInfo 没打印索引统计: ' + added);
   });
   test('注册了定义/悬停/链接/CodeLens provider', () => {
     assert.ok(stub._state.definitionProvider, '缺 definition provider');
